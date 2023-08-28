@@ -1,9 +1,13 @@
 use anyhow::Context;
 
 /// Cholesky decomposition.  
-/// Input: Lower triangle of input matrix stored as a n * (n + 1) / 2 vector
-/// Output: Lower triangle of decomposition stored as a n * (n + 1) / 2 vector
-/// n: matrix dimension
+///
+/// Input:
+///   a - Lower triangle of input matrix stored as a n * (n + 1) / 2 vector
+///   n - matrix dimension
+///
+/// Output:
+///   l - Lower triangle of decomposition stored as a n * (n + 1) / 2 vector
 pub fn cholesky(a: &[f64], l: &mut [f64], n: usize) -> anyhow::Result<()> {
     assert_eq!(
         a.len(),
@@ -53,6 +57,104 @@ fn cholesky_works() {
         "Unexpected result from cholesky (diff = {})",
         z
     );
+}
+
+/// Find linear dependencies in X'X matrix using an iterative Cholesky decomposition.
+/// Eigenvalues should be >=0, otherwise an error is returned.
+///
+/// Input:
+///   a - Lower triangle of input matrix stored as a n * (n + 1) / 2 vector
+///   n - matrix dimension
+///
+/// Output:
+///   l - Lower triangle of cholesky decomposition of a, with the diagonal elements set to zero for
+///       rows that should be skipped.
+///   skip - Boolean slice indicating rows/cols that should be skipped
+///
+/// If successful, the submatrix with just the rows/cols where the corresponding element of skip
+/// is false will be positive definite
+pub fn find_dependencies(
+    a: &[f64],
+    l: &mut [f64],
+    skip: &mut [bool],
+    n: usize,
+) -> anyhow::Result<()> {
+    assert_eq!(
+        a.len(),
+        l.len(),
+        "Input and output vectors are different sizes"
+    );
+    assert!(
+        a.len() == (n * (n + 1)) >> 1 && skip.len() == n,
+        "Vector size does not correspond to matrix dimension"
+    );
+
+    for s in skip.iter_mut() {
+        *s = false
+    }
+
+    let lim = f64::EPSILON.sqrt();
+    loop {
+        let mut changed = false;
+        let mut ix = 0;
+        'outer: for i in 0..n {
+            let ix1 = ix + i + 1;
+            if skip[i] {
+                for l1 in l[ix..ix1].iter_mut() {
+                    *l1 = 0.0
+                }
+            } else {
+                let mut ix2 = 0;
+                for (j, a1) in a[ix..ix1].iter().enumerate() {
+                    if skip[j] {
+                        l[ix + j] = 0.0
+                    } else {
+                        let sum: f64 = (0..j).map(|k| l[ix + k] * l[ix2 + k]).sum();
+                        let z = *a1 - sum;
+                        if i == j {
+                            if z < -lim {
+                                return Err(anyhow!("Matrix has negative eigen values"));
+                            } else if z < lim {
+                                skip[i] = true;
+                                changed = true;
+                                break 'outer;
+                            } else {
+                                l[ix + j] = z.sqrt();
+                            }
+                        } else {
+                            l[ix + j] = z / l[ix2 + j]
+                        }
+                    }
+                    ix2 += j + 1;
+                }
+            }
+            ix = ix1;
+        }
+        if !changed {
+            break;
+        }
+    }
+
+    Ok(())
+}
+
+#[test]
+fn find_dependencies_works() {
+    let a = vec![
+        8.0, 2.0, 2.0, 3.0, 0.0, 3.0, 3.0, 0.0, 0.0, 3.0, 3.0, 1.0, 0.0, 2.0, 3.0, 5.0, 1.0, 3.0,
+        1.0, 0.0, 5.0,
+    ];
+    let mut l = vec![0.0; 21];
+
+    // Check that cholesky function detects non-pd
+    let r = cholesky(&a, &mut l, 6);
+    assert!(r.is_err(), "Cholesky() did not detect dependency");
+
+    // Check find_dependencies
+    let mut skip = vec![false; 6];
+    find_dependencies(&a, &mut l, &mut skip, 6).expect("Error from find_dependencies()");
+    println!("{:?}\n{:?}", skip, l);
+    panic!("oook!");
 }
 
 /// Solve A.x = y with solutions being returned in x.  l is the lower triangle of the Cholesky
