@@ -94,45 +94,42 @@ pub fn find_dependencies(
     }
 
     let lim = f64::EPSILON.sqrt();
-    loop {
-        let mut changed = false;
-        let mut ix = 0;
-        'outer: for i in 0..n {
-            let ix1 = ix + i + 1;
-            if skip[i] {
-                for l1 in l[ix..ix1].iter_mut() {
-                    *l1 = 0.0
-                }
-            } else {
-                let mut ix2 = 0;
-                for (j, a1) in a[ix..ix1].iter().enumerate() {
-                    if skip[j] {
-                        l[ix + j] = 0.0
-                    } else {
-                        let sum: f64 = (0..j).map(|k| l[ix + k] * l[ix2 + k]).sum();
-                        let z = *a1 - sum;
-                        if i == j {
-                            if z < -lim {
-                                return Err(anyhow!("Matrix has negative eigen values"));
-                            } else if z < lim {
-                                skip[i] = true;
-                                changed = true;
-                                break 'outer;
-                            } else {
-                                l[ix + j] = z.sqrt();
-                            }
-                        } else {
-                            l[ix + j] = z / l[ix2 + j]
-                        }
-                    }
-                    ix2 += j + 1;
-                }
+    let mut ix = 0;
+    'outer: for i in 0..n {
+        let ix1 = ix + i + 1;
+        if skip[i] {
+            for l1 in l[ix..ix1].iter_mut() {
+                *l1 = 0.0
             }
-            ix = ix1;
+        } else {
+            let mut ix2 = 0;
+            for (j, a1) in a[ix..ix1].iter().enumerate() {
+                if skip[j] {
+                    l[ix + j] = 0.0
+                } else {
+                    let sum: f64 = (0..j).map(|k| l[ix + k] * l[ix2 + k]).sum();
+                    let z = *a1 - sum;
+                    if i == j {
+                        if z < -lim {
+                            return Err(anyhow!("Matrix has negative eigen values"));
+                        } else if z < lim {
+                            skip[i] = true;
+                            for l1 in l[ix..ix1].iter_mut() {
+                                *l1 = 0.0
+                            }
+                            ix = ix1;
+                            continue 'outer;
+                        } else {
+                            l[ix + j] = z.sqrt();
+                        }
+                    } else {
+                        l[ix + j] = z / l[ix2 + j]
+                    }
+                }
+                ix2 += j + 1;
+            }
         }
-        if !changed {
-            break;
-        }
+        ix = ix1;
     }
 
     Ok(())
@@ -153,8 +150,44 @@ fn find_dependencies_works() {
     // Check find_dependencies
     let mut skip = vec![false; 6];
     find_dependencies(&a, &mut l, &mut skip, 6).expect("Error from find_dependencies()");
-    println!("{:?}\n{:?}", skip, l);
-    panic!("oook!");
+    assert_eq!(
+        skip,
+        [false, false, false, true, false, true],
+        "Mismatch in skip vector"
+    );
+    let expected_res = vec![
+        2.8284271247461903,
+        0.7071067811865475,
+        1.224744871391589,
+        1.0606601717798212,
+        -0.6123724356957945,
+        1.2247448713915892,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        1.0606601717798212,
+        0.20412414523193162,
+        -0.8164965809277258,
+        0.0,
+        1.0801234497346437,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+    ];
+    let z: f64 = l
+        .iter()
+        .zip(expected_res.iter())
+        .map(|(a, b)| (a - b).powi(2))
+        .sum();
+    assert!(
+        z < 1.0e-16,
+        "Unexpected result from cholesky (diff = {})",
+        z
+    );
 }
 
 /// Solve A.x = y with solutions being returned in x.  l is the lower triangle of the Cholesky
