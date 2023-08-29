@@ -18,18 +18,6 @@ struct LeastSquaresParams<'a> {
     skip: &'a mut [bool],
 }
 
-impl<'a> LeastSquaresParams<'a> {
-    fn trim(mut self, p: usize) -> Self {
-        assert!(p <= self.beta.len());
-        let sz = (p * (p + 1)) >> 1;
-        self.xx = &mut self.xx[..sz];
-        self.l = &mut self.l[..sz];
-        self.xy = &mut self.xy[..p];
-        self.beta = &mut self.beta[..p];
-        self
-    }
-}
-
 #[derive(Default)]
 pub struct LeastSquares {
     // general workspace
@@ -164,34 +152,88 @@ impl LeastSquares {
 
         let mut lsp = self.slices_mut();
 
-        make_filtered_xx_xy(m, p, x, y, lsp.xx, lsp.xy, lsp.skip);
-        if p_used < p {
-            lsp = lsp.trim(p_used)
-        }
+        //       if p_used < p {
+        //           lsp = lsp.trim(p_used)
+        //       }
 
-        cholesky(lsp.xx, lsp.l, p_used)
+        let sz = (p_used * (p_used + 1)) >> 1;
+
+        make_filtered_xx_xy(
+            m,
+            p,
+            x,
+            y,
+            &mut lsp.xx[..sz],
+            &mut lsp.xy[..p_used],
+            lsp.skip,
+        );
+
+        cholesky(&lsp.xx[..sz], &mut lsp.l[..sz], p_used)
             .with_context(|| "Error returned from Cholesy Decomposition")?;
-        cholesky_solve(lsp.l, lsp.xy, lsp.beta);
+        cholesky_solve(&lsp.l[..sz], &lsp.xy[..p_used], &mut lsp.beta[..p_used]);
 
         let (fit, res) = if check_flags(LS_NO_RES) {
             (None, None)
         } else {
-            calc_filtered_residuals(x, y, lsp.beta, lsp.fitted_values, lsp.residuals, lsp.skip);
+            calc_filtered_residuals(
+                x,
+                y,
+                &lsp.beta[..p_used],
+                lsp.fitted_values,
+                lsp.residuals,
+                lsp.skip,
+            );
             (
                 Some(lsp.fitted_values as &[f64]),
                 Some(lsp.residuals as &[f64]),
             )
         };
 
+        // If necessary, expand beta vector to account for skipped columns
+        if p_used < p {
+            let mut ix = p_used;
+            for (i, s) in lsp.skip.iter().enumerate().rev() {
+                lsp.beta[i] = if *s {
+                    0.0
+                } else {
+                    ix -= 1;
+                    lsp.beta[ix]
+                }
+            }
+        }
+
         let rss = res.map(|r| r.iter().map(|e| e * e).sum());
 
         let var = if !check_flags(LS_NO_RES | LS_NO_VAR) && m > p_used {
             let res_var = rss.unwrap() / ((m - p_used) as f64);
             let v = lsp.xx;
-            cholesky_inverse(lsp.l, v, p_used);
+            cholesky_inverse(&lsp.l[..sz], &mut v[..sz], p_used);
             for z in v.iter_mut() {
                 *z *= res_var;
             }
+            // If necessary, expand var vector to account for skipped columns
+            if p_used < p {
+                let mut ix = sz;
+                let mut ix1 = (p * (p + 1)) >> 1;
+                for (i, s) in lsp.skip.iter().enumerate().rev() {
+                    ix1 -= i + 1;
+                    if *s {
+                        for x in v[ix1..ix1 + i + 1].iter_mut() {
+                            *x = 0.0;
+                        }
+                    } else {
+                        for j in (0..=i).rev() {
+                            v[ix1 + j] = if lsp.skip[j] {
+                                0.0
+                            } else {
+                                ix -= 1;
+                                v[ix]
+                            }
+                        }
+                    }
+                }
+            }
+
             Some(v as &[f64])
         } else {
             None
@@ -274,6 +316,11 @@ fn least_squares_works() {
     let r = ls.least_squares(&x, &y).expect("Error in least squares");
 
     let tst = |x: &[f64], y: &[f64], s: &str| {
+        assert_eq!(
+            x.len(),
+            y.len(),
+            "Unequal vector lengths when comparing for {s}"
+        );
         let z: f64 = x.iter().zip(y.iter()).map(|(a, b)| (a - b).powi(2)).sum();
         assert!(
             z < 1.0e-16,
@@ -316,15 +363,29 @@ fn least_squares_works() {
 #[test]
 fn least_squares_works2() {
     let x = vec![
-        1.0, 1.0, 1.0, 1.0, 0.4, -0.6, 5.0, -3.2, 0.2, -0.3, 2.5, -1.6,
+        1.0, 1.0, 1.0, 1.0, 1.0, 0.4, -0.6, 5.0, -3.2, 0.3, 0.2, -0.3, 2.5, -1.6, 0.15, 1.0, 1.0,
+        0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 1.0, 1.0, -2.0, 7.2, 3.4, -1.1, -0.9,
     ];
-    let y = vec![23.1, 22.8, 27.3, 20.5];
+
+    /*  let x = vec![
+         1.0, 1.0, 1.0, 1.0, 1.0, 0.4, -0.6, 5.0, -3.2, 0.3, 1.0, 1.0, 0.0, 0.0, 0.0, -2.0, 7.2,
+         3.4, -1.1, -0.9,
+     ];
+
+    */
+
+    let y = vec![23.1, 22.8, 27.3, 20.5, 22.2];
 
     let mut ls = LeastSquares::new();
     ls.set_flags(LS_FILTER);
     let r = ls.least_squares(&x, &y).expect("Error in least squares");
 
     let tst = |x: &[f64], y: &[f64], s: &str| {
+        assert_eq!(
+            x.len(),
+            y.len(),
+            "Unequal vector lengths when comparing for {s}"
+        );
         let z: f64 = x.iter().zip(y.iter()).map(|(a, b)| (a - b).powi(2)).sum();
         assert!(
             z < 1.0e-16,
@@ -338,17 +399,43 @@ fn least_squares_works2() {
     println!("RSS: {:?}, Res_var: {:?}", r.rss(), r.res_var());
     println!("Var_Matrix {:?}", r.var_matrix());
 
-    let beta_exp = &[23.09493166287016, 0.8251708428246014];
+    let beta_exp = &[
+        22.734784668944663,
+        0.8008251881976463,
+        0.0,
+        0.083744953680487,
+        0.0,
+        0.0813664985363918,
+    ];
     let res_exp = &[
-        -0.3249999999999993,
-        0.20017084282460118,
-        0.07921412300683528,
-        0.04561503416856638,
+        0.12387329916857581,
+        -0.12387329916857936,
+        0.2844432950433742,
+        0.4173590816778372,
+        -0.7018023767212043,
     ];
     let var_exp = &[
-        0.019607030694631076,
-        -0.0008772720668738735,
-        0.0021931801671846844,
+        0.27098418670466096,
+        -0.01471783017703672,
+        0.025548106132614847,
+        0.0,
+        0.0,
+        0.0,
+        -0.2655236990658112,
+        0.034910915149720105,
+        0.0,
+        0.7604144459724388,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        -0.0026662579448282725,
+        -0.006783951676700732,
+        0.0,
+        -0.039324414454589354,
+        0.0,
+        0.01588933739682598,
     ];
 
     tst(r.beta(), beta_exp, "beta");
@@ -362,7 +449,11 @@ fn least_squares_works2() {
         var_exp,
         "covariance matrix",
     );
-    assert_eq!(ls.skip(), &[false, false, true], "Mismatch in skip vector");
+    assert_eq!(
+        ls.skip(),
+        &[false, false, true, false, true, false],
+        "Mismatch in skip vector"
+    );
 }
 
 /// Make X'X and X'Y matrices from design matrix X and observation vector Y
