@@ -192,19 +192,11 @@ impl LeastSquares {
             return Err(anyhow!("Design matrix is empty"));
         }
 
-        let lsw = self.slices_mut();
+        let mut lsw = self.slices_mut();
 
         let sz = (p_used * (p_used + 1)) >> 1;
 
-        make_filtered_xx_xy(
-            m,
-            p,
-            x,
-            y,
-            &mut lsw.xx[..sz],
-            &mut lsw.xy[..p_used],
-            lsw.skip,
-        );
+        make_filtered_xx_xy(x, y, wt, &mut lsw);
 
         cholesky(&lsw.xx[..sz], &mut lsw.l[..sz], p_used)
             .with_context(|| "Error returned from Cholesky Decomposition")?;
@@ -240,7 +232,7 @@ impl LeastSquares {
             }
         }
 
-        let rss = res.map(|r| r.iter().map(|e| e * e).sum());
+        let rss = res.map(|r| calc_rss(r, wt));
 
         let var = if !check_flags(LS_NO_RES | LS_NO_VAR) && m > p_used {
             let res_var = rss.unwrap() / ((m - p_used) as f64);
@@ -315,7 +307,7 @@ impl LeastSquares {
             )
         };
 
-        let rss = res.map(|r| r.iter().map(|e| e * e).sum());
+        let rss = res.map(|r| calc_rss(r, wt));
 
         let var = if !check_flags(LS_NO_RES | LS_NO_VAR) && m > p {
             let res_var = rss.unwrap() / ((m - p) as f64);
@@ -403,38 +395,63 @@ fn make_xx_xy(x: &[f64], y: &[f64], wt: Option<&[f64]>, lsw: &mut LeastSquaresWo
 /// Only columns where the corresponding element of skip are false will be used
 /// If q is the number of false entries in skip, then the X'Y will be a q vector and
 /// X'X will be a q * (q + 1) / 2 vector.
-fn make_filtered_xx_xy(
-    m: usize,
-    p: usize,
-    x: &[f64],
-    y: &[f64],
-    xx: &mut [f64],
-    xy: &mut [f64],
-    skip: &[bool],
-) {
+fn make_filtered_xx_xy(x: &[f64], y: &[f64], wt: Option<&[f64]>, lsw: &mut LeastSquaresWork) {
+    let m = lsw.m;
     let mut ix = 0;
     let mut i1 = 0;
-    for i in 0..p {
-        if !skip[i] {
-            let x1 = &x[i * m..(i + 1) * m];
-            for j in 0..i {
-                if !skip[j] {
-                    xx[ix] = x[j * m..(j + 1) * m]
-                        .iter()
-                        .zip(x1)
-                        .map(|(a, b)| a * b)
-                        .sum();
-                    ix += 1;
+    if let Some(wt) = wt {
+        // Weighted
+        for i in 0..lsw.p {
+            if !lsw.skip[i] {
+                let x1 = &x[i * m..(i + 1) * m];
+                for j in 0..i {
+                    if !lsw.skip[j] {
+                        lsw.xx[ix] = x[j * m..(j + 1) * m]
+                            .iter()
+                            .zip(x1)
+                            .zip(wt)
+                            .map(|((a, b), w)| a * b * w)
+                            .sum();
+                        ix += 1;
+                    }
                 }
+                let (z1, z2) = y
+                    .iter()
+                    .zip(x1)
+                    .zip(wt)
+                    .fold((0.0, 0.0), |(s1, s2), ((a, b), w)| {
+                        (s1 + (b * b * w), s2 + (a * b * w))
+                    });
+                lsw.xx[ix] = z1;
+                ix += 1;
+                lsw.xy[i1] = z2;
+                i1 += 1;
             }
-            let (z1, z2) = y
-                .iter()
-                .zip(x1)
-                .fold((0.0, 0.0), |(s1, s2), (a, b)| (s1 + (b * b), s2 + (a * b)));
-            xx[ix] = z1;
-            ix += 1;
-            xy[i1] = z2;
-            i1 += 1;
+        }
+    } else {
+        // unweighted
+        for i in 0..lsw.p {
+            if !lsw.skip[i] {
+                let x1 = &x[i * m..(i + 1) * m];
+                for j in 0..i {
+                    if !lsw.skip[j] {
+                        lsw.xx[ix] = x[j * m..(j + 1) * m]
+                            .iter()
+                            .zip(x1)
+                            .map(|(a, b)| a * b)
+                            .sum();
+                        ix += 1;
+                    }
+                }
+                let (z1, z2) = y
+                    .iter()
+                    .zip(x1)
+                    .fold((0.0, 0.0), |(s1, s2), (a, b)| (s1 + (b * b), s2 + (a * b)));
+                lsw.xx[ix] = z1;
+                ix += 1;
+                lsw.xy[i1] = z2;
+                i1 += 1;
+            }
         }
     }
 }
@@ -476,6 +493,14 @@ fn calc_filtered_residuals(
     }
 }
 
+fn calc_rss(res: &[f64], wt: Option<&[f64]>) -> f64 {
+    if let Some(wt) = wt {
+        res.iter().zip(wt).map(|(e, w)| e * e * w).sum()
+    } else {
+        res.iter().map(|e| e * e).sum()
+    }
+}
+
 pub struct LeastSquaresResult<'a> {
     beta: &'a [f64],
     chol: &'a [f64],
@@ -514,48 +539,6 @@ impl<'a> LeastSquaresResult<'a> {
     }
     pub fn var_matrix(&self) -> Option<&[f64]> {
         self.var
-    }
-}
-
-#[derive(Default)]
-pub struct WeightedLeastSquares {
-    work: Vec<f64>,
-    lsq: LeastSquares,
-}
-
-impl WeightedLeastSquares {
-    pub fn new() -> Self {
-        Self::default()
-    }
-
-    /// Weighted least squares - w contains the weight for each sample and is used to
-    /// calculate the weights.  x and y are the same as for [LeastSquares::ls()]
-    pub fn weighted_least_squares(
-        &mut self,
-        x: &[f64],
-        y: &[f64],
-        w: &[f64],
-    ) -> anyhow::Result<LeastSquaresResult> {
-        let m = y.len();
-        assert_eq!(w.len(), m, "y and w unequal size");
-
-        let work_size = x.len() + y.len();
-        self.work.resize(work_size, 0.0);
-
-        let (wv, x2) = self.work.split_at_mut(m);
-        x2.copy_from_slice(x);
-
-        for (i, (yi, wi)) in y.iter().copied().zip(w.iter().copied()).enumerate() {
-            let wt = wi.sqrt();
-            wv[i] = yi * wt;
-            for xj in x2[i..].iter_mut().step_by(m) {
-                *xj *= wt
-            }
-        }
-
-        self.lsq
-            .ls(x2, wv)
-            .with_context(|| "Weighted least squares - error from least squares")
     }
 }
 
@@ -625,62 +608,25 @@ mod test {
         ];
 
         let y = vec![2.0, 4.0, 3.0, 7.0, 6.0, 1.0, 8.0, 5.0];
-        let mut xx = vec![0.0; 21];
-        let mut xy = vec![0.0; 6];
-        let skip = vec![false, true, false, false, true, false];
+        let mut skip = vec![false, true, false, false, true, false];
 
-        make_filtered_xx_xy(8, 6, &x, &y, &mut xx, &mut xy, &skip);
+        let p = 6;
+        let m = y.len();
+        let work_size = least_squares_work_size(m, p);
+        let mut work = vec![0.0; work_size];
+        let mut lsw = LeastSquaresWork::from_work_slice(&mut work, &mut skip, m, p);
+
+        make_filtered_xx_xy(&x, &y, None, &mut lsw);
 
         let expected_xx = vec![8.0, 3.0, 3.0, 3.0, 0.0, 3.0, 5.0, 3.0, 1.0, 5.0];
         let expected_xy = vec![36.0, 16.0, 14.0, 26.0];
 
-        tst(&xx[..10], &expected_xx, "X'X");
-        tst(&xy[..4], &expected_xy, "X'Y");
-    }
-    #[test]
-    fn test_weighted_least_squares() {
-        let x = vec![1.0, 1.0, 1.0, 1.0, 0.2, -0.3, 2.5, -1.6];
-        let y = vec![23.1, 22.8, 27.3, 20.5];
-        let w = vec![1.5, 0.7, 1.1, 0.8];
-
-        let mut wls = WeightedLeastSquares::new();
-        let r = wls
-            .weighted_least_squares(&x, &y, &w)
-            .expect("Error in least squares");
-
-        println!("Beta: {:?}", r.beta());
-        println!("Res: {:?}", r.residuals());
-        println!("RSS: {:?}, Res_var: {:?}", r.rss(), r.res_var());
-        println!("Var_Matrix {:?}", r.var_matrix());
-
-        let beta_exp = &[23.09493166287016, 1.6503416856492028];
-        let res_exp = &[
-            -0.3249999999999993,
-            0.20017084282460118,
-            0.07921412300683528,
-            0.04561503416856638,
-        ];
-        let var_exp = &[
-            0.019607030694631076,
-            -0.001754544133747747,
-            0.008772720668738737,
-        ];
-
-        tst(r.beta(), beta_exp, "beta");
-        tst(
-            r.residuals().expect("Missing residuals"),
-            res_exp,
-            "residuals",
-        );
-        tst(
-            r.var_matrix().expect("Missing covariance matrix"),
-            var_exp,
-            "covariance matrix",
-        );
+        tst(&lsw.xx[..10], &expected_xx, "X'X");
+        tst(&lsw.xy[..4], &expected_xy, "X'Y");
     }
 
     #[test]
-    fn least_squares_works() {
+    fn test_least_squares() {
         let x = vec![1.0, 1.0, 1.0, 1.0, 0.2, -0.3, 2.5, -1.6];
         let y = vec![23.1, 22.8, 27.3, 20.5];
 
@@ -714,7 +660,7 @@ mod test {
     }
 
     #[test]
-    fn least_squares_works2() {
+    fn test_least_squares2() {
         let x = vec![
             1.0, 1.0, 1.0, 1.0, 1.0, 0.4, -0.6, 5.0, -3.2, 0.3, 0.2, -0.3, 2.5, -1.6, 0.15, 1.0,
             1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 1.0, 1.0, -2.0, 7.2, 3.4, -1.1, -0.9,
@@ -780,6 +726,41 @@ mod test {
             ls.skip(),
             &[false, false, true, false, true, false],
             "Mismatch in skip vector"
+        );
+    }
+
+    #[test]
+    fn test_weighted_least_squares() {
+        let x = vec![1.0, 1.0, 1.0, 1.0, 0.2, -0.3, 2.5, -1.6];
+        let y = vec![23.1, 22.8, 27.3, 20.5];
+        let w = vec![1.5, 0.7, 1.1, 0.8];
+
+        let mut ls = LeastSquares::new();
+        let r = ls.wls(&x, &y, &w).expect("Error in least squares");
+
+        let beta_exp = &[23.035628913576687, 1.6627701630356364];
+        let res_exp = &[
+            -0.26818294618381344,
+            0.26320213533400505,
+            0.10744567883422107,
+            0.12480334728033071,
+        ];
+        let var_exp = &[
+            0.023693136168353633,
+            -0.004085926644111393,
+            0.010738653359523538,
+        ];
+
+        tst(r.beta(), beta_exp, "beta");
+        tst(
+            r.residuals().expect("Missing residuals"),
+            res_exp,
+            "residuals",
+        );
+        tst(
+            r.var_matrix().expect("Missing covariance matrix"),
+            var_exp,
+            "covariance matrix",
         );
     }
 }
