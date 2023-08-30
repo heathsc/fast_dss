@@ -95,6 +95,14 @@ impl LeastSquares {
         &self.skip
     }
 
+    pub fn n_effects(&self) -> usize {
+        self.n_effects
+    }
+
+    pub fn n_samples(&self) -> usize {
+        self.n_samples
+    }
+
     pub fn set_skip(&mut self, s: &[bool]) {
         assert_eq!(s.len(), self.skip.len());
         self.skip.copy_from_slice(s);
@@ -235,12 +243,8 @@ impl LeastSquares {
         let rss = res.map(|r| calc_rss(r, wt));
 
         let var = if !check_flags(LS_NO_RES | LS_NO_VAR) && m > p_used {
-            let res_var = rss.unwrap() / ((m - p_used) as f64);
             let v = lsw.xx;
             cholesky_inverse(&lsw.l[..sz], &mut v[..sz], p_used);
-            for z in v.iter_mut() {
-                *z *= res_var;
-            }
             // If necessary, expand var vector to account for skipped columns
             if p_used < p {
                 let mut ix = sz;
@@ -274,9 +278,9 @@ impl LeastSquares {
             chol: lsw.l,
             fit,
             res,
-            var,
+            inverse: var,
             rss,
-            df: m - p,
+            df: m - p_used,
         })
     }
 
@@ -313,9 +317,6 @@ impl LeastSquares {
             let res_var = rss.unwrap() / ((m - p) as f64);
             let v = lsw.xx;
             cholesky_inverse(lsw.l, v, p);
-            for z in v.iter_mut() {
-                *z *= res_var;
-            }
             Some(v as &[f64])
         } else {
             None
@@ -326,7 +327,7 @@ impl LeastSquares {
             chol: lsw.l,
             fit,
             res,
-            var,
+            inverse: var,
             rss,
             df: m - p,
         })
@@ -506,12 +507,15 @@ pub struct LeastSquaresResult<'a> {
     chol: &'a [f64],
     fit: Option<&'a [f64]>,
     res: Option<&'a [f64]>,
-    var: Option<&'a [f64]>,
+    inverse: Option<&'a [f64]>, // Inverse of X'X (or X'WX) matrix
     rss: Option<f64>,
     df: usize,
 }
 
 impl<'a> LeastSquaresResult<'a> {
+    pub fn n_effects(&self) -> usize {
+        self.beta.len()
+    }
     pub fn beta(&self) -> &'a [f64] {
         self.beta
     }
@@ -537,8 +541,8 @@ impl<'a> LeastSquaresResult<'a> {
             None
         }
     }
-    pub fn var_matrix(&self) -> Option<&[f64]> {
-        self.var
+    pub fn inverse(&self) -> Option<&[f64]> {
+        self.inverse
     }
 }
 
@@ -550,7 +554,7 @@ mod test {
         let z: f64 = x.iter().zip(y.iter()).map(|(a, b)| (a - b).powi(2)).sum();
         assert!(
             z < f64::EPSILON,
-            "Unexpected result from make_xx_xy_works\n{:?}\n{:?}\n",
+            "Unexpected result for {s}\n{:?}\n{:?}\n",
             x,
             y
         );
@@ -652,8 +656,10 @@ mod test {
             res_exp,
             "residuals",
         );
+        let var = r.res_var().expect("Missing res_var");
+        let covar: Option<Vec<f64>> = r.inverse().map(|v| v.iter().map(|z| *z * var).collect());
         tst(
-            r.var_matrix().expect("Missing covariance matrix"),
+            covar.as_ref().expect("Missing covariance matrix"),
             var_exp,
             "covariance matrix",
         );
@@ -717,8 +723,10 @@ mod test {
             res_exp,
             "residuals",
         );
+        let var = r.res_var().expect("Missing res_var");
+        let covar: Option<Vec<f64>> = r.inverse().map(|v| v.iter().map(|z| *z * var).collect());
         tst(
-            r.var_matrix().expect("Missing covariance matrix"),
+            covar.as_ref().expect("Missing covariance matrix"),
             var_exp,
             "covariance matrix",
         );
@@ -757,8 +765,10 @@ mod test {
             res_exp,
             "residuals",
         );
+        let var = r.res_var().expect("Missing res_var");
+        let covar: Option<Vec<f64>> = r.inverse().map(|v| v.iter().map(|z| *z * var).collect());
         tst(
-            r.var_matrix().expect("Missing covariance matrix"),
+            covar.as_ref().expect("Missing covariance matrix"),
             var_exp,
             "covariance matrix",
         );
