@@ -1,4 +1,6 @@
 use anyhow::Context;
+use libm::{erf, erfc};
+use std::f64::consts::SQRT_2;
 
 use super::{betabinomial::*, lsquares::*};
 
@@ -116,6 +118,34 @@ impl Dss {
     }
 }
 
+pub fn dss_wald_test(fit: &LeastSquaresResult, contrasts: &[f64]) -> f64 {
+    wald_test(fit.beta(), fit.inverse().unwrap(), contrasts)
+}
+
+pub fn wald_test(beta: &[f64], cov: &[f64], contrasts: &[f64]) -> f64 {
+    let p = beta.len();
+    assert_eq!(p, contrasts.len(), "Contrasts vector is the wrong size");
+
+    // Calculae C'VC
+    let mut z = 0.0;
+    let mut ix = 0;
+    for (i, ci) in contrasts.iter().enumerate() {
+        for (j, (x, cj)) in cov[ix..ix + i].iter().zip(contrasts.iter()).enumerate() {
+            z += 2.0 * ci * cj * x
+        }
+        z += ci * ci * cov[ix + i];
+        ix += i + 1
+    }
+
+    // Calculate test statistic
+    contrasts
+        .iter()
+        .zip(beta.iter())
+        .map(|(c, b)| b * c)
+        .sum::<f64>()
+        / z.sqrt()
+}
+
 fn set_weight(pi: f64, phi: f64, d: usize, dsw: &mut DssWork, ix: usize) {
     let alpha = pi * (1.0 - phi) / phi;
     let beta = 1.0 - alpha;
@@ -154,24 +184,25 @@ pub fn asin_transform(y: f64, cov: f64) -> f64 {
     (2.0 * (y + c0) / (cov + 2.0 * c0) - 1.0).asin()
 }
 
-fn chisq(mv: &[f32], x: &[f32], beta: &[f32], z: &[f32], ns: usize) -> f32 {
-    mv.iter()
-        .copied()
-        .zip(z.iter().copied())
-        .enumerate()
-        .map(|(i, (m, zi))| {
-            let pred: f32 = beta
-                .iter()
-                .copied()
-                .zip(x[i..].iter().step_by(ns).copied())
-                .map(|(b, xj)| b * xj)
-                .sum();
-            m * (zi - pred).powi(2)
-        })
-        .sum()
+/// Lower tail of standard normal
+pub fn pnorm(z: f64) -> f64 {
+    0.5 * (1.0 + erf(z / SQRT_2))
 }
 
-pub fn calc_phi(p: usize, chi2: f64, depth: &[f64]) -> f64 {
+/// Upper tail of standard normal
+pub fn pnormc(z: f64) -> f64 {
+    0.5 * erfc(z / SQRT_2)
+}
+
+pub fn pvalue(ts: f32) -> f64 {
+    if ts >= 0.0 {
+        2.0 * pnormc(ts as f64)
+    } else {
+        2.0 * pnorm(ts as f64)
+    }
+}
+
+fn calc_phi(p: usize, chi2: f64, depth: &[f64]) -> f64 {
     let n_samples = depth.len();
     let sigma_sq = chi2 / ((n_samples - p) as f64);
 
@@ -202,12 +233,24 @@ mod test {
     }
 
     #[test]
-    fn test_chisq() {
-        let m: Vec<f32> = vec![1.0, 1.0];
-        let x: Vec<f32> = vec![1.0, 1.0, 0.0, 1.0];
-        let beta: Vec<f32> = vec![1.0, 1.0];
-        let z: Vec<f32> = vec![0.0, 0.0];
-        let res = chisq(&m, &x, &beta, &z, 2);
-        assert_eq!(res, 5.0);
+    fn test_wald_test() {
+        let beta = vec![2.0, 4.0 / 3.0, 2.0, 2.0];
+        let cov = vec![
+            5.0 / 7.0,
+            -2.0 / 7.0,
+            22.0 / 21.0,
+            -4.0 / 7.0,
+            3.0 / 7.0,
+            6.0 / 7.0,
+            -3.0 / 7.0,
+            -3.0 / 7.0,
+            1.0 / 7.0,
+            6.0 / 7.0,
+        ];
+
+        let contrasts = vec![0.0, 1.0, 0.0, 1.0];
+
+        let t = wald_test(&beta, &cov, &contrasts);
+        assert!((t - 3.256694736394648).abs() < f64::EPSILON.sqrt())
     }
 }

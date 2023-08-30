@@ -314,7 +314,6 @@ impl LeastSquares {
         let rss = res.map(|r| calc_rss(r, wt));
 
         let var = if !check_flags(LS_NO_RES | LS_NO_VAR) && m > p {
-            let res_var = rss.unwrap() / ((m - p) as f64);
             let v = lsw.xx;
             cholesky_inverse(lsw.l, v, p);
             Some(v as &[f64])
