@@ -34,11 +34,36 @@ impl<'a> DssWork<'a> {
     }
 }
 
+pub struct DssResult<'a> {
+    ls_fit: LeastSquaresResult<'a>,
+    phi: f64,
+}
+
+impl<'a> std::ops::Deref for DssResult<'a> {
+    type Target = LeastSquaresResult<'a>;
+
+    fn deref(&self) -> &Self::Target {
+        &self.ls_fit
+    }
+}
+
+impl<'a> DssResult<'a> {
+    pub fn phi(&self) -> f64 {
+        self.phi
+    }
+}
+
 pub struct Dss {
     work: Vec<f64>,
     ls: LeastSquares,
     lfact: LogFactorial,
     max_depth: usize,
+}
+
+impl Default for Dss {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl Dss {
@@ -51,7 +76,7 @@ impl Dss {
         }
     }
 
-    pub fn fit(&mut self, y: &[f64], depth: &[f64], x: &[f64]) -> anyhow::Result<()> {
+    pub fn fit(&mut self, y: &[f64], depth: &[f64], x: &[f64]) -> anyhow::Result<DssResult> {
         let n_samples = y.len();
         assert_eq!(n_samples, depth.len(), "Unequal input vector sizes");
 
@@ -73,15 +98,12 @@ impl Dss {
             *z = asin_transform(*x, *cov)
         }
 
-        // Initial phi estimate
-        let dss_fit = self
-            ._fit(depth, x)
-            .with_context(|| "Error in model fitting")?;
-
-        Ok(())
+        // Fit model
+        self._fit(depth, x)
+            .with_context(|| "Error in model fitting")
     }
 
-    fn _fit(&mut self, depth: &[f64], x: &[f64]) -> anyhow::Result<LeastSquaresResult> {
+    fn _fit(&mut self, depth: &[f64], x: &[f64]) -> anyhow::Result<DssResult> {
         let mut dsw =
             DssWork::from_work_slice(&mut self.work, depth.len(), self.max_depth, &self.lfact);
 
@@ -89,32 +111,35 @@ impl Dss {
         // For the wls we use 1/variance as the weights, we can just use the depth
         // as the weights
 
-        let ls_res = self
+        let ls_fit = self
             .ls
             .wls(x, dsw.z, depth)
             .with_context(|| "Error from wls for initial phi estimate")?;
 
-        let chi2 = ls_res
+        let chi2 = ls_fit
             .residuals()
             .unwrap()
             .iter()
             .zip(depth)
-            .map(|(e, d)| e * d)
+            .map(|(e, d)| e * e * d)
             .sum::<f64>();
 
-        let phi = calc_phi(ls_res.n_effects(), chi2, depth);
+        let phi = calc_phi(ls_fit.n_effects(), chi2, depth);
 
         // Calculate the weights for the next round of wls
 
-        let fval = ls_res.fitted_values().unwrap();
+        let fval = ls_fit.fitted_values().unwrap();
         for (ix, (f, d)) in fval.iter().zip(depth.iter()).enumerate() {
             let pi = (f.sin() + 1.0) * 0.5;
             set_weight(pi, phi, d.round() as usize, &mut dsw, ix);
         }
 
-        self.ls
+        let ls_fit = self
+            .ls
             .wls(x, dsw.z, dsw.wt)
-            .with_context(|| "Error from wls for second fitting")
+            .with_context(|| "Error from wls for second fitting")?;
+
+        Ok(DssResult { ls_fit, phi })
     }
 }
 
@@ -130,7 +155,7 @@ pub fn wald_test(beta: &[f64], cov: &[f64], contrasts: &[f64]) -> f64 {
     let mut z = 0.0;
     let mut ix = 0;
     for (i, ci) in contrasts.iter().enumerate() {
-        for (j, (x, cj)) in cov[ix..ix + i].iter().zip(contrasts.iter()).enumerate() {
+        for (x, cj) in cov[ix..ix + i].iter().zip(contrasts.iter()) {
             z += 2.0 * ci * cj * x
         }
         z += ci * ci * cov[ix + i];
@@ -146,34 +171,46 @@ pub fn wald_test(beta: &[f64], cov: &[f64], contrasts: &[f64]) -> f64 {
         / z.sqrt()
 }
 
+fn zmean(p: &[f64], y: &[f64]) -> f64 {
+    p.iter().zip(y.iter()).map(|(p, y)| y * p).sum::<f64>()
+}
+
+fn zvariance(p: &[f64], y: &[f64]) -> f64 {
+    let mn = zmean(p, y);
+
+    p.iter()
+        .zip(y.iter())
+        .map(|(p, y)| (*y - mn).powi(2) * p)
+        .sum::<f64>()
+}
+
+fn mk_betabinomial_dist(
+    alpha: f64,
+    beta: f64,
+    d: usize,
+    p: &mut [f64],
+    pi: &mut [f64],
+    lfact: &LogFactorial,
+) {
+    let konst = lbeta(alpha, beta);
+    let d1 = d as f64;
+    for y in 0..=d {
+        pi[y] = (((2 * y) as f64) / d1 - 1.0).asin();
+        p[y] = (lfact.dbetabinomial(alpha, beta, d, y) - konst).exp();
+    }
+}
+
 fn set_weight(pi: f64, phi: f64, d: usize, dsw: &mut DssWork, ix: usize) {
     let alpha = pi * (1.0 - phi) / phi;
-    let beta = 1.0 - alpha;
-    let konst = lbeta(alpha, beta);
-
-    let d1 = d as f64;
+    let beta = (1.0 - pi) * (1.0 - phi) / phi;
 
     // First calculate betabinomial pdf
-    for y in 0..=d {
-        dsw.pi[y] = (((2 * y) as f64) / d1 - 1.0).sin();
-        dsw.bb_dist[y] = (dsw.lfact.dbetabinomial(alpha, beta, d, y) - konst).exp()
-    }
+    mk_betabinomial_dist(alpha, beta, d, dsw.bb_dist, dsw.pi, dsw.lfact);
 
-    let zmean = dsw
-        .bb_dist
-        .iter()
-        .zip(dsw.pi.iter())
-        .map(|(p, y)| y * p)
-        .sum::<f64>();
+    // Calculate variance
+    let zvar = zvariance(dsw.bb_dist, dsw.pi);
 
-    let zvariance = dsw
-        .bb_dist
-        .iter()
-        .zip(dsw.pi.iter())
-        .map(|(p, y)| (*y - zmean).powi(2) * p)
-        .sum::<f64>();
-
-    dsw.wt[ix] = 1.0 / zvariance
+    dsw.wt[ix] = 1.0 / zvar
 }
 
 /// a) arcsin returns z between -pi/2 and +pi/2 ~ 1.57
@@ -206,6 +243,7 @@ fn calc_phi(p: usize, chi2: f64, depth: &[f64]) -> f64 {
     let n_samples = depth.len();
     let sigma_sq = chi2 / ((n_samples - p) as f64);
 
+    println!("{n_samples} {chi2} {sigma_sq}");
     let sm = depth.iter().sum::<f64>() - (n_samples as f64);
 
     ((n_samples as f64) * (sigma_sq - 1.0) / sm)
@@ -252,5 +290,56 @@ mod test {
 
         let t = wald_test(&beta, &cov, &contrasts);
         assert!((t - 3.256694736394648).abs() < f64::EPSILON.sqrt())
+    }
+
+    /*   #[test]
+      fn test_dss_fit() {
+          let depth = vec![10.0, 7.0, 15.0, 2.0, 10.0, 12.0];
+          let y = vec![4.0, 0.0, 6.0, 2.0, 5.0, 8.0];
+          let x = vec![1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 0.0, 0.0, 0.0, 1.0, 1.0, 1.0];
+
+          let mut dss = Dss::new();
+          let fit = dss.fit(&y, &depth, &x).expect("Error in Dss::fit()");
+
+          println!("beta: {:?}", fit.beta());
+          println!("phi: {:?}", fit.phi());
+          println!("res_var: {:?}", fit.res_var());
+          panic!("ooook!");
+      }
+
+    */
+
+    #[test]
+    fn zmean_works() {
+        let a = 4.0;
+        let b = 3.0;
+        let depth = 10;
+
+        let lf = LogFactorial::new(10);
+        let mut p = vec![0.0; 11];
+        let mut pi = vec![0.0; 11];
+
+        mk_betabinomial_dist(a, b, depth, &mut p, &mut pi, &lf);
+
+        let res = zmean(&p, &pi);
+        assert!((res - 0.1692037950).abs() < 1e-6);
+    }
+
+    #[test]
+    fn zvariance_works() {
+        let phi = 0.1;
+        let pi = 0.3;
+        let depth = 30;
+        let lf = LogFactorial::new(30);
+        let alpha = pi * (1.0 - phi) / phi;
+        let beta = (1.0 - pi) * (1.0 - phi) / phi;
+
+        let mut p = vec![0.0; depth + 1];
+        let mut pi = vec![0.0; depth + 1];
+
+        mk_betabinomial_dist(alpha, beta, depth, &mut p, &mut pi, &lf);
+
+        let res = zvariance(&p, &pi);
+        assert!((res - 0.153663).abs() < 1e-6);
     }
 }

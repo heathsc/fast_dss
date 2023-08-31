@@ -61,4 +61,11 @@ mod test {
         let z = lbeta(8.0, 4.0) + 7.185_387_015_580_416_5;
         assert!(z.abs() < f64::EPSILON.sqrt())
     }
+
+    #[test]
+    fn dbetabinomial_test() {
+        let lf = LogFactorial::new(10);
+        let z = (lf.dbetabinomial(4.0, 3.0, 10, 3) - lbeta(4.0, 3.0)).exp() - 0.0899100899100902;
+        assert!(z.abs() < f64::EPSILON.sqrt())
+    }
 }
