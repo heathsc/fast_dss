@@ -51,6 +51,12 @@ impl<'a> DssResult<'a> {
     pub fn phi(&self) -> f64 {
         self.phi
     }
+
+    pub fn se(&self) -> Option<impl Iterator<Item = f64> + '_> {
+        self.inverse().map(|inv| {
+            (0..self.ls_fit.n_effects()).map(|i| inv[(((i + 1) * (i + 2)) >> 1) - 1].sqrt())
+        })
+    }
 }
 
 pub struct Dss {
@@ -304,6 +310,10 @@ mod test {
           println!("beta: {:?}", fit.beta());
           println!("phi: {:?}", fit.phi());
           println!("res_var: {:?}", fit.res_var());
+          println!("inverse: {:?}", fit.inverse());
+          for x in fit.se().unwrap() {
+              println!("se: {:?}", x);
+          }
           panic!("ooook!");
       }
 
@@ -342,4 +352,27 @@ mod test {
         let res = zvariance(&p, &pi);
         assert!((res - 0.153663).abs() < 1e-6);
     }
+    /*
+    #[test]
+    fn zvariance_test() {
+        let phi = 0.000001;
+        let pi = 0.05;
+        let max_depth = 1000;
+        let lf = LogFactorial::new(max_depth + 1);
+        let alpha = pi * (1.0 - phi) / phi;
+        let beta = (1.0 - pi) * (1.0 - phi) / phi;
+
+        let mut p = vec![0.0; max_depth + 1];
+        let mut pi = vec![0.0; max_depth + 1];
+
+        for depth in 1..=max_depth {
+            mk_betabinomial_dist(alpha, beta, depth, &mut p, &mut pi, &lf);
+            let res = zvariance(&p, &pi);
+            let d = depth as f64;
+            let v1 = 1.0 / d;
+            let v2 = (1.0 + (d - 1.0) * phi) / d;
+            println!("{}\t{}\t{v1}\t{v2}", depth, res);
+        }
+        panic!("Oooook!")
+    } */
 }
