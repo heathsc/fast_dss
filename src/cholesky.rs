@@ -46,7 +46,7 @@ fn cholesky_works() {
     let a = vec![4.0, 12.0, 37.0, -16.0, -43.0, 98.0, 8.0, 27.0, 10.0, 110.0];
     let mut l = vec![0.0; 10];
     cholesky(&a, &mut l, 4).expect("Cholesky Error");
-    let expected_res = vec![2.0, 6.0, 1.0, -8.0, 5.0, 3.0, 4.0, 3.0, 9.0, 2.0];
+    let expected_res = [2.0, 6.0, 1.0, -8.0, 5.0, 3.0, 4.0, 3.0, 9.0, 2.0];
     let z: f64 = l
         .iter()
         .zip(expected_res.iter())
@@ -155,7 +155,7 @@ fn find_dependencies_works() {
         [false, false, false, true, false, true],
         "Mismatch in skip vector"
     );
-    let expected_res = vec![
+    let expected_res = [
         2.8284271247461903,
         0.7071067811865475,
         1.224744871391589,
@@ -206,7 +206,11 @@ pub fn cholesky_solve(l: &[f64], y: &[f64], x: &mut [f64]) {
     let mut ix = 0;
     for i in 0..n {
         let ix1 = ix + i + 1;
-        let sum: f64 = l[ix..ix1].iter().zip(x.iter()).map(|(a, b)| *a * *b).sum();
+        let sum: f64 = l[ix..ix1 - 1]
+            .iter()
+            .zip(x.iter())
+            .map(|(a, b)| *a * *b)
+            .sum();
         x[i] = (y[i] - sum) / l[ix1 - 1];
         ix = ix1;
     }

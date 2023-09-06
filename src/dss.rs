@@ -22,7 +22,8 @@ impl<'a> DssWork<'a> {
     ) -> Self {
         let (z, t) = work.split_at_mut(n_samples);
         let (wt, t) = t.split_at_mut(n_samples);
-        let (bb_dist, pi) = t.split_at_mut(max_depth + 1);
+        let (bb_dist, t) = t.split_at_mut(max_depth + 1);
+        let pi = &mut t[..=max_depth];
         DssWork {
             z,
             wt,
@@ -72,6 +73,8 @@ impl Default for Dss {
     }
 }
 
+const MAX_DEPTH: usize = 100;
+
 impl Dss {
     pub fn new() -> Self {
         Self {
@@ -90,10 +93,12 @@ impl Dss {
         let max_depth = match depth.iter().max_by(|a, b| a.partial_cmp(b).unwrap()) {
             Some(x) => *x as usize,
             None => return Err(anyhow!("Dss::fit() called with empty observation vector")),
-        };
+        }
+        .min(MAX_DEPTH)
+        .max(1);
 
         self.max_depth = max_depth;
-
+        // eprintln!("Max depth = {max_depth}");
         let work_size = 2 * (n_samples + max_depth + 1);
         self.work.resize(work_size, 0.0);
 
@@ -136,10 +141,14 @@ impl Dss {
 
         let fval = ls_fit.fitted_values().unwrap();
         for (ix, (f, d)) in fval.iter().zip(depth.iter()).enumerate() {
+            let depth = (*d as usize).min(MAX_DEPTH).max(1);
             let pi = (f.sin() + 1.0) * 0.5;
-            set_weight(pi, phi, d.round() as usize, &mut dsw, ix);
+            set_weight(pi, phi, depth, &mut dsw, ix);
         }
 
+        //        println!("x: {:?}", x);
+        //        println!("y: {:?}", dsw.z);
+        //        println!("wr: {:?}", dsw.wt);
         let ls_fit = self
             .ls
             .wls(x, dsw.z, dsw.wt)
@@ -211,11 +220,20 @@ fn set_weight(pi: f64, phi: f64, d: usize, dsw: &mut DssWork, ix: usize) {
     let beta = (1.0 - pi) * (1.0 - phi) / phi;
 
     // First calculate betabinomial pdf
-    mk_betabinomial_dist(alpha, beta, d, dsw.bb_dist, dsw.pi, dsw.lfact);
+    mk_betabinomial_dist(
+        alpha,
+        beta,
+        d,
+        &mut dsw.bb_dist[..=d],
+        &mut dsw.pi[..=d],
+        dsw.lfact,
+    );
 
     // Calculate variance
-    let zvar = zvariance(dsw.bb_dist, dsw.pi);
-
+    let zvar = zvariance(&dsw.bb_dist[..=d], &dsw.pi[..=d]);
+    if zvar.is_nan() {
+        println!("{ix} zvar = {zvar} d: {d}, pi: {pi}, phi: {phi}");
+    }
     dsw.wt[ix] = 1.0 / zvar
 }
 
@@ -249,7 +267,7 @@ fn calc_phi(p: usize, chi2: f64, depth: &[f64]) -> f64 {
     let n_samples = depth.len();
     let sigma_sq = chi2 / ((n_samples - p) as f64);
 
-    println!("{n_samples} {chi2} {sigma_sq}");
+    // println!("{n_samples} {chi2} {sigma_sq}");
     let sm = depth.iter().sum::<f64>() - (n_samples as f64);
 
     ((n_samples as f64) * (sigma_sq - 1.0) / sm)
@@ -353,26 +371,30 @@ mod test {
         assert!((res - 0.153663).abs() < 1e-6);
     }
     /*
-    #[test]
-    fn zvariance_test() {
-        let phi = 0.000001;
-        let pi = 0.05;
-        let max_depth = 1000;
-        let lf = LogFactorial::new(max_depth + 1);
-        let alpha = pi * (1.0 - phi) / phi;
-        let beta = (1.0 - pi) * (1.0 - phi) / phi;
+       #[test]
+       fn zvariance_test() {
+           let phis = [0.001, 0.01, 0.1, 0.25, 0.5, 0.999];
+           let depth = 1;
+           let lf = LogFactorial::new(depth + 1);
+           let mut p_st = vec![0.0; depth + 1];
+           let mut pi_st = vec![0.0; depth + 1];
+           for i in 1..1000 {
+               let pi = (i as f64) / 1000.0;
+               print!("{pi}\t{depth}");
+               for phi in phis {
+                   let alpha = pi * (1.0 - phi) / phi;
+                   let beta = (1.0 - pi) * (1.0 - phi) / phi;
+                   mk_betabinomial_dist(alpha, beta, depth, &mut p_st, &mut pi_st, &lf);
+                   let res = zvariance(&p_st, &pi_st);
+                   let d = depth as f64;
+                   let v1 = 1.0 / d;
+                   let v2 = (1.0 + (d - 1.0) * phi) / d;
+                   print!("\t{res}\t{v1}\t{v2}");
+               }
+               println!()
+           }
+           panic!("Oooook!")
+       }
 
-        let mut p = vec![0.0; max_depth + 1];
-        let mut pi = vec![0.0; max_depth + 1];
-
-        for depth in 1..=max_depth {
-            mk_betabinomial_dist(alpha, beta, depth, &mut p, &mut pi, &lf);
-            let res = zvariance(&p, &pi);
-            let d = depth as f64;
-            let v1 = 1.0 / d;
-            let v2 = (1.0 + (d - 1.0) * phi) / d;
-            println!("{}\t{}\t{v1}\t{v2}", depth, res);
-        }
-        panic!("Oooook!")
-    } */
+    */
 }

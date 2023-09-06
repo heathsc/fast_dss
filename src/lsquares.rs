@@ -27,7 +27,8 @@ impl<'a> LeastSquaresWork<'a> {
         let (l, t) = t.split_at_mut(k);
         let (xy, t) = t.split_at_mut(p);
         let (beta, t) = t.split_at_mut(p);
-        let (residuals, fitted_values) = t.split_at_mut(m);
+        let (residuals, t) = t.split_at_mut(m);
+        let fitted_values = &mut t[..m];
         LeastSquaresWork {
             xx,
             l,
@@ -298,6 +299,7 @@ impl LeastSquares {
         let mut lsw = self.slices_mut();
 
         make_xx_xy(x, y, wt, &mut lsw);
+
         cholesky(lsw.xx, lsw.l, p).with_context(|| "Error returned from Cholesky Decomposition")?;
         cholesky_solve(lsw.l, lsw.xy, lsw.beta);
 
