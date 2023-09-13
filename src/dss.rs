@@ -65,6 +65,7 @@ pub struct Dss {
     ls: LeastSquares,
     lfact: LogFactorial,
     max_depth: usize,
+    fixed_phi: Option<f64>,
 }
 
 impl Default for Dss {
@@ -82,7 +83,16 @@ impl Dss {
             ls: LeastSquares::new(),
             lfact: LogFactorial::new(1000),
             max_depth: 0,
+            fixed_phi: None,
         }
+    }
+
+    pub fn set_phi(&mut self, phi: f64) {
+        self.fixed_phi = Some(phi)
+    }
+
+    pub fn clear_phi(&mut self) {
+        self.fixed_phi = None
     }
 
     pub fn fit(&mut self, y: &[f64], depth: &[f64], x: &[f64]) -> anyhow::Result<DssResult> {
@@ -135,7 +145,9 @@ impl Dss {
             .map(|(e, d)| e * e * d)
             .sum::<f64>();
 
-        let phi = calc_phi(ls_fit.n_effects(), chi2, depth);
+        let phi = self
+            .fixed_phi
+            .unwrap_or_else(|| calc_phi(ls_fit.n_effects(), chi2, depth));
 
         // Calculate the weights for the next round of wls
 
@@ -146,9 +158,6 @@ impl Dss {
             set_weight(pi, phi, depth, &mut dsw, ix);
         }
 
-        //        println!("x: {:?}", x);
-        //        println!("y: {:?}", dsw.z);
-        //        println!("wr: {:?}", dsw.wt);
         let ls_fit = self
             .ls
             .wls(x, dsw.z, dsw.wt)
@@ -315,25 +324,26 @@ mod test {
         let t = wald_test(&beta, &cov, &contrasts);
         assert!((t - 3.256694736394648).abs() < f64::EPSILON.sqrt())
     }
+    /*
+       #[test]
+       fn test_dss_fit() {
+           let d = 18.0;
+           let depth = vec![d; 6];
+           let y = vec![0.25 * d, 0.25 * d, 0.25 * d, 0.75 * d, 0.75 * d, 0.75 * d];
+           let x = vec![1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 0.0, 0.0, 0.0, 1.0, 1.0, 1.0];
 
-    /*   #[test]
-      fn test_dss_fit() {
-          let depth = vec![10.0, 7.0, 15.0, 2.0, 10.0, 12.0];
-          let y = vec![4.0, 0.0, 6.0, 2.0, 5.0, 8.0];
-          let x = vec![1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 0.0, 0.0, 0.0, 1.0, 1.0, 1.0];
+           let mut dss = Dss::new();
+           let fit = dss.fit(&y, &depth, &x).expect("Error in Dss::fit()");
 
-          let mut dss = Dss::new();
-          let fit = dss.fit(&y, &depth, &x).expect("Error in Dss::fit()");
-
-          println!("beta: {:?}", fit.beta());
-          println!("phi: {:?}", fit.phi());
-          println!("res_var: {:?}", fit.res_var());
-          println!("inverse: {:?}", fit.inverse());
-          for x in fit.se().unwrap() {
-              println!("se: {:?}", x);
-          }
-          panic!("ooook!");
-      }
+           println!("beta: {:?}", fit.beta());
+           println!("phi: {:?}", fit.phi());
+           println!("res_var: {:?}", fit.res_var());
+           println!("inverse: {:?}", fit.inverse());
+           for (x, b) in fit.se().unwrap().zip(fit.beta()) {
+               println!("se: {}, t: {}", x, *b / x);
+           }
+           panic!("ooook!");
+       }
 
     */
 

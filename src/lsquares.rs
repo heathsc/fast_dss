@@ -243,6 +243,11 @@ impl LeastSquares {
 
         let rss = res.map(|r| calc_rss(r, wt));
 
+        let df = m - p_used;
+        let cdet = {
+            let d = wt.map(|w| w.iter().product::<f64>()).unwrap_or(1.0);
+            1.0 / d
+        };
         let var = if !check_flags(LS_NO_RES | LS_NO_VAR) && m > p_used {
             let v = lsw.xx;
             cholesky_inverse(&lsw.l[..sz], &mut v[..sz], p_used);
@@ -281,7 +286,9 @@ impl LeastSquares {
             res,
             inverse: var,
             rss,
-            df: m - p_used,
+            cdet,
+            df,
+            n_samples: m,
         })
     }
 
@@ -314,6 +321,11 @@ impl LeastSquares {
         };
 
         let rss = res.map(|r| calc_rss(r, wt));
+        let df = m - p;
+        let cdet = {
+            let d = wt.map(|w| w.iter().product::<f64>()).unwrap_or(1.0);
+            1.0 / d
+        };
 
         let var = if !check_flags(LS_NO_RES | LS_NO_VAR) && m > p {
             let v = lsw.xx;
@@ -330,7 +342,9 @@ impl LeastSquares {
             res,
             inverse: var,
             rss,
-            df: m - p,
+            cdet,
+            df,
+            n_samples: m,
         })
     }
 }
@@ -510,7 +524,9 @@ pub struct LeastSquaresResult<'a> {
     res: Option<&'a [f64]>,
     inverse: Option<&'a [f64]>, // Inverse of X'X (or X'WX) matrix
     rss: Option<f64>,
+    cdet: f64, // Determinant of inverse weight matrix
     df: usize,
+    n_samples: usize,
 }
 
 impl<'a> LeastSquaresResult<'a> {
@@ -544,6 +560,11 @@ impl<'a> LeastSquaresResult<'a> {
     }
     pub fn inverse(&self) -> Option<&[f64]> {
         self.inverse
+    }
+    pub fn likelihhod(&self) -> Option<f64> {
+        let ns = self.n_samples as f64;
+        self.rss
+            .map(|r| -0.5 * (ns * (2.0 * std::f64::consts::PI).ln() + self.cdet.ln() + r))
     }
 }
 
